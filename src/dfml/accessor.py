@@ -102,4 +102,152 @@ class MLAccessor:
         self._fitted["scale"] = {"transformer": scaler, "columns": cols}
         return result
 
-   
+    # ------------------------------------------------------------------
+    # Encoding
+    # ------------------------------------------------------------------
+    def encode(
+        self,
+        columns: Optional[Iterable[str]] = None,
+        method: EncodeMethod = "onehot",
+        drop_first: bool = False,
+    ) -> pd.DataFrame:
+        """Encode categorical columns.
+
+        Parameters
+        ----------
+        columns : list of str, optional
+            Columns to encode. Defaults to all non-numeric columns.
+        method : {"onehot", "label"}
+            "onehot" expands each category into its own 0/1 column.
+            "label" assigns each category an integer code in place.
+        drop_first : bool
+            For one-hot encoding, drop the first category level to
+            avoid the dummy-variable trap. Ignored for "label".
+
+        Returns
+        -------
+        pd.DataFrame
+            A new DataFrame with the given columns encoded.
+        """
+        cols = list(columns) if columns is not None else list(
+            self._df.select_dtypes(exclude="number").columns
+        )
+        if not cols:
+            return self._df.copy()
+
+        result = self._df.copy()
+
+        if method == "onehot":
+            encoder = OneHotEncoder(sparse_output=False, drop="first" if drop_first else None)
+            encoded_array = encoder.fit_transform(result[cols])
+            encoded_cols = encoder.get_feature_names_out(cols)
+            encoded_df = pd.DataFrame(encoded_array, columns=encoded_cols, index=result.index)
+            result = pd.concat([result.drop(columns=cols), encoded_df], axis=1)
+            self._fitted["encode"] = {"transformer": encoder, "columns": cols}
+
+        elif method == "label":
+            encoders = {}
+            for col in cols:
+                le = LabelEncoder()
+                result[col] = le.fit_transform(result[col])
+                encoders[col] = le
+            self._fitted["encode"] = {"transformer": encoders, "columns": cols}
+
+        else:
+            raise ValueError(f"method must be 'onehot' or 'label', got {method!r}")
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Imputing
+    # ------------------------------------------------------------------
+    def impute(
+        self,
+        columns: Optional[Iterable[str]] = None,
+        strategy: ImputeStrategy = "mean",
+        fill_value=None,
+    ) -> pd.DataFrame:
+        """Fill missing values using a sklearn SimpleImputer.
+
+        Parameters
+        ----------
+        columns : list of str, optional
+            Columns to impute. Defaults to all numeric columns for
+            "mean"/"median", or all columns for "most_frequent"/"constant".
+        strategy : {"mean", "median", "most_frequent", "constant"}
+            Imputation strategy, passed through to sklearn.
+        fill_value :
+            Value to use when strategy="constant".
+
+        Returns
+        -------
+        pd.DataFrame
+            A new DataFrame with missing values filled.
+        """
+        if columns is not None:
+            cols = list(columns)
+        elif strategy in ("mean", "median"):
+            cols = list(self._df.select_dtypes(include="number").columns)
+        else:
+            cols = list(self._df.columns)
+
+        if not cols:
+            return self._df.copy()
+
+        imputer = SimpleImputer(strategy=strategy, fill_value=fill_value)
+        result = self._df.copy()
+        result[cols] = imputer.fit_transform(result[cols])
+
+        self._fitted["impute"] = {"transformer": imputer, "columns": cols}
+        return result
+
+    # ------------------------------------------------------------------
+    # Splitting
+    # ------------------------------------------------------------------
+    def split(
+        self,
+        target: str,
+        test_size: float = 0.2,
+        random_state: Optional[int] = None,
+        stratify: bool = False,
+    ):
+        """Split into train/test features and target.
+
+        Parameters
+        ----------
+        target : str
+            Name of the target column.
+        test_size : float
+            Fraction of rows to hold out for testing.
+        random_state : int, optional
+            Seed for reproducibility.
+        stratify : bool
+            If True, stratify the split by the target column.
+
+        Returns
+        -------
+        X_train, X_test, y_train, y_test : pd.DataFrame / pd.Series
+        """
+        from sklearn.model_selection import train_test_split
+
+        if target not in self._df.columns:
+            raise KeyError(f"Target column {target!r} not found in DataFrame.")
+
+        X = self._df.drop(columns=[target])
+        y = self._df[target]
+
+        return train_test_split(
+            X,
+            y,
+            test_size=test_size,
+            random_state=random_state,
+            stratify=y if stratify else None,
+        )
+
+    # ------------------------------------------------------------------
+    # Introspection helpers
+    # ------------------------------------------------------------------
+    @property
+    def fitted_(self) -> dict:
+        """Dict of fitted transformers from the most recent calls, keyed by step name."""
+        return self._fitted
