@@ -10,4 +10,3 @@ dist/
 venv/
 *.egg
 .coverage
-htmlcov/
